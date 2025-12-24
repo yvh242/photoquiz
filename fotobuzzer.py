@@ -18,7 +18,8 @@ def init_db():
             "order": [], 
             "excluded_teams": [],
             "connected_teams": [],
-            "subject": ""
+            "subject": "",
+            "game_started": False  # Nieuwe vlag om start te forceren
         }
         with open(DB_FILE, "w") as f:
             json.dump(data, f)
@@ -57,7 +58,6 @@ def update_db(**kwargs):
 
 init_db()
 
-# --- Sidebar / Rolkeuze ---
 with st.sidebar:
     st.title("⚙️ Configuratie")
     role = st.radio("Kies je rol:", ["Team", "Host"])
@@ -65,12 +65,10 @@ with st.sidebar:
 if role == "Host":
     status = get_status()
 
-    # --- ADMIN PANEL IN DE SIDEBAR ---
     with st.sidebar:
         st.divider()
         st.header("🎮 Admin Panel")
         
-        # 1. Onderwerp & Bestanden
         current_subject = st.text_input("Onderwerp van de ronde:", value=status.get("subject", ""))
         if st.button("Update Onderwerp"):
             update_db(subject=current_subject)
@@ -78,8 +76,6 @@ if role == "Host":
         uploaded_files = st.file_uploader("Upload foto's", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
         
         st.divider()
-        
-        # 2. Spel Bediening
         st.subheader("Bediening")
         grid_size = st.slider("Raster grootte", 4, 30, 10)
         delay = st.slider("Snelheid (sec)", 0.05, 2.0, 0.4)
@@ -89,7 +85,8 @@ if role == "Host":
                 total_cells = grid_size * grid_size
                 order = list(range(total_cells))
                 random.shuffle(order)
-                update_db(winner=None, active=True, revealed=[], order=order, excluded_teams=[])
+                # Zet game_started op True en active op True
+                update_db(winner=None, active=True, revealed=[], order=order, excluded_teams=[], game_started=True)
                 st.rerun()
 
         if st.button("❌ FOUT! (Team uitsluiten)", use_container_width=True):
@@ -103,12 +100,11 @@ if role == "Host":
         if st.button("⏭️ VOLGENDE FOTO", use_container_width=True):
             if uploaded_files:
                 st.session_state.photo_idx = (st.session_state.get('photo_idx', 0) + 1) % len(uploaded_files)
-                update_db(winner=None, active=False, revealed=[], order=[], excluded_teams=[])
+                # Zet game_started weer op False voor de nieuwe foto
+                update_db(winner=None, active=False, revealed=[], order=[], excluded_teams=[], game_started=False)
                 st.rerun()
 
         st.divider()
-
-        # 3. Team Beheer
         with st.expander("👥 Team Beheer"):
             teams = status.get("connected_teams", [])
             if teams:
@@ -120,13 +116,10 @@ if role == "Host":
                 if st.button("Wis alle teams"):
                     update_db(connected_teams=[])
                     st.rerun()
-            else:
-                st.write("Geen teams.")
 
-    # --- HOOFDSCHERM (PRESENTATIE) ---
+    # --- HOOFDSCHERM ---
     st.title("📸 Foto Blokjes Quiz")
     
-    # Toon onderwerp groot bovenaan
     if status.get("subject"):
         st.markdown(f"<h1 style='text-align: center; color: #FF4B4B;'>Categorie: {status['subject']}</h1>", unsafe_allow_html=True)
 
@@ -141,7 +134,8 @@ if role == "Host":
         
         placeholder = st.empty()
 
-        if status.get("active") and status.get("winner") is None:
+        # Toon alleen de animatie als game_started op True staat
+        if status.get("game_started") and status.get("active") and status.get("winner") is None:
             revealed = status.get("revealed", [])
             order = status.get("order", [])
             
@@ -162,13 +156,20 @@ if role == "Host":
                 placeholder.image(temp_img, use_container_width=True)
                 time.sleep(delay)
         else:
-            # Stilstaand beeld tonen
+            # Als het spel nog niet gestart is, of er is een winnaar, of het is gepauzeerd:
             temp_img = np.zeros_like(img_array)
+            # Vul het beeld alleen met reeds onthulde blokjes
             for idx in status.get("revealed", []):
                 r, c = divmod(idx, grid_size)
                 temp_img[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w] = \
                     img_array[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w]
-            placeholder.image(temp_img if status.get("revealed") else img_array * 0, use_container_width=True)
+            
+            # Als er nog niets onthuld is en game_started is False, toon zwart (of een placeholder)
+            if not status.get("revealed") and not status.get("game_started"):
+                st.info("Klaar voor de start... Druk op START in het Admin Panel.")
+                placeholder.image(img_array * 0, use_container_width=True)
+            else:
+                placeholder.image(temp_img, use_container_width=True)
             
             if status.get("winner"):
                 st.markdown(f"<div style='text-align: center; background-color: #2E7D32; padding: 20px; border-radius: 10px;'>"
@@ -180,27 +181,23 @@ if role == "Host":
 else:
     # --- TEAM INTERFACE (ONGEWIJZIGD) ---
     st.title("🚨 Team Buzzer")
+    # ... (rest van de team code blijft hetzelfde als in de vorige stap)
     if "my_team_name" not in st.session_state:
         st.session_state.my_team_name = ""
-
     team_name_input = st.text_input("Vul je teamnaam in:", value=st.session_state.my_team_name)
-    
     if team_name_input:
         st.session_state.my_team_name = team_name_input
         update_db(connected_teams=team_name_input)
         status = get_status()
-        
         if team_name_input not in status.get("connected_teams", []):
             st.session_state.my_team_name = ""
             st.rerun()
-
         if status.get("subject"):
             st.info(f"Categorie: {status['subject']}")
-
         if team_name_input in status.get("excluded_teams", []):
             st.error("❌ Helaas, fout antwoord! Wacht op de volgende foto.")
-        elif not status.get("active"):
-            st.info("Wacht op de Host om de ronde te starten...")
+        elif not status.get("game_started"): # Team ziet nu ook dat het spel nog niet gestart is
+            st.info("De host maakt de foto klaar...")
         elif status.get("winner"):
             if status["winner"] == team_name_input:
                 st.success("JULLIE ZIJN EERST!")
@@ -212,6 +209,5 @@ else:
                 if s.get("winner") is None:
                     update_db(winner=team_name_input)
                 st.rerun()
-        
         time.sleep(1)
         st.rerun()
