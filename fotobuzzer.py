@@ -11,42 +11,57 @@ DB_FILE = "quiz_state.json"
 
 def init_db():
     if not os.path.exists(DB_FILE):
+        data = {
+            "winner": None, 
+            "active": False, 
+            "revealed": [], 
+            "order": [], 
+            "excluded_teams": [],
+            "connected_teams": [],
+            "subject": ""
+        }
         with open(DB_FILE, "w") as f:
-            json.dump({
-                "winner": None, 
-                "active": False, 
-                "revealed": [], 
-                "order": [], 
-                "excluded_teams": [],
-                "connected_teams": [],
-                "subject": ""
-            }, f)
+            json.dump(data, f)
 
 def get_status():
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+    # Probeer het bestand te lezen, probeer opnieuw bij een fout (bezet bestand)
+    for _ in range(5):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            time.sleep(0.1)
+    return {}
 
 def update_db(**kwargs):
     status = get_status()
+    if not status: return # Veiligheid bij leesfout
+    
     for key, value in kwargs.items():
         if key == "connected_teams":
-            # Zorg dat we geen dubbele teams krijgen
-            if value not in status["connected_teams"]:
-                status["connected_teams"].append(value)
+            if value not in status.get("connected_teams", []):
+                status.setdefault("connected_teams", []).append(value)
         else:
             status[key] = value
-    with open(DB_FILE, "w") as f:
-        json.dump(status, f)
+            
+    # Veilig schrijven: schrijf eerst naar tijdelijk bestand en hernoem (voorkomt corruptie)
+    for _ in range(5):
+        try:
+            with open(DB_FILE + ".tmp", "w") as f:
+                json.dump(status, f)
+            os.replace(DB_FILE + ".tmp", DB_FILE)
+            break
+        except IOError:
+            time.sleep(0.1)
 
 init_db()
 
-# --- Sidebar ---
+# --- Interface ---
 st.sidebar.title("Instellingen")
 role = st.sidebar.radio("Kies je rol:", ["Team", "Host"])
 
 if role == "Host":
     st.title("Admin Panel - Foto Blokjes Quiz")
-    
     status = get_status()
 
     with st.sidebar:
@@ -59,13 +74,9 @@ if role == "Host":
         delay = st.slider("Snelheid (sec)", 0.05, 2.0, 0.4)
         uploaded_files = st.file_uploader("Upload foto's", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
-    # Toon ingelogde teams
     st.subheader("👥 Ingelogde Teams")
     teams = status.get("connected_teams", [])
-    if teams:
-        st.write(", ".join(teams))
-    else:
-        st.write("*Nog geen teams verbonden...*")
+    st.write(", ".join(teams) if teams else "*Nog geen teams verbonden...*")
 
     if uploaded_files:
         if 'photo_idx' not in st.session_state:
@@ -87,7 +98,7 @@ if role == "Host":
         
         with col2:
             if st.button("❌ Fout! (Uitsluiten)"):
-                if status["winner"]:
+                if status.get("winner"):
                     excluded = status.get("excluded_teams", [])
                     if status["winner"] not in excluded:
                         excluded.append(status["winner"])
@@ -100,20 +111,19 @@ if role == "Host":
                 update_db(winner=None, active=False, revealed=[], order=[], excluded_teams=[])
                 st.rerun()
 
-        # Toon onderwerp groot boven de foto
         if status.get("subject"):
             st.markdown(f"### 💡 Categorie: {status['subject']}")
 
         placeholder = st.empty()
 
-        # Animatie logica
-        if status["active"] and status["winner"] is None:
-            revealed = status["revealed"]
-            order = status["order"]
+        if status.get("active") and status.get("winner") is None:
+            revealed = status.get("revealed", [])
+            order = status.get("order", [])
             
+            # Animatie loop
             for i in range(len(revealed), len(order)):
                 current_status = get_status()
-                if current_status["winner"]:
+                if current_status.get("winner"):
                     st.rerun() 
                 
                 revealed.append(order[i])
@@ -129,25 +139,21 @@ if role == "Host":
                 time.sleep(delay)
         else:
             temp_img = np.zeros_like(img_array)
-            for idx in status["revealed"]:
+            for idx in status.get("revealed", []):
                 r, c = divmod(idx, grid_size)
                 temp_img[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w] = \
                     img_array[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w]
+            placeholder.image(temp_img if status.get("revealed") else img_array * 0, use_container_width=True)
             
-            placeholder.image(temp_img if status["revealed"] else img_array * 0, use_container_width=True)
-            
-            if status["winner"]:
+            if status.get("winner"):
                 st.header(f"🏆 {status['winner']} mag antwoorden!")
 
 else:
-    # --- Team Interface ---
     st.title("Team Buzzer")
     team_name = st.text_input("Teamnaam:", placeholder="Voer je naam in...")
     
     if team_name:
-        # Registreer het team in de lijst van ingelogde teams
         update_db(connected_teams=team_name)
-        
         status = get_status()
         excluded_teams = status.get("excluded_teams", [])
 
@@ -156,9 +162,9 @@ else:
 
         if team_name in excluded_teams:
             st.error("❌ Fout antwoord gegeven. Wacht op de volgende foto.")
-        elif not status["active"]:
+        elif not status.get("active"):
             st.info("Wacht tot de Host de ronde start...")
-        elif status["winner"]:
+        elif status.get("winner"):
             if status["winner"] == team_name:
                 st.success("JULLIE ZIJN EERST!")
             else:
@@ -166,7 +172,7 @@ else:
         else:
             if st.button("🚨 IK WEET HET! 🚨", use_container_width=True):
                 s = get_status()
-                if s["winner"] is None and team_name not in s.get("excluded_teams", []):
+                if s.get("winner") is None and team_name not in s.get("excluded_teams", []):
                     update_db(winner=team_name)
                 st.rerun()
         
