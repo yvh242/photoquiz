@@ -12,7 +12,15 @@ DB_FILE = "quiz_state.json"
 def init_db():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
-            json.dump({"winner": None, "active": False, "revealed": [], "order": [], "excluded_teams": []}, f)
+            json.dump({
+                "winner": None, 
+                "active": False, 
+                "revealed": [], 
+                "order": [], 
+                "excluded_teams": [],
+                "connected_teams": [],
+                "subject": ""
+            }, f)
 
 def get_status():
     with open(DB_FILE, "r") as f:
@@ -21,7 +29,12 @@ def get_status():
 def update_db(**kwargs):
     status = get_status()
     for key, value in kwargs.items():
-        status[key] = value
+        if key == "connected_teams":
+            # Zorg dat we geen dubbele teams krijgen
+            if value not in status["connected_teams"]:
+                status["connected_teams"].append(value)
+        else:
+            status[key] = value
     with open(DB_FILE, "w") as f:
         json.dump(status, f)
 
@@ -34,10 +47,25 @@ role = st.sidebar.radio("Kies je rol:", ["Team", "Host"])
 if role == "Host":
     st.title("Admin Panel - Foto Blokjes Quiz")
     
+    status = get_status()
+
     with st.sidebar:
+        st.header("Spelinstellingen")
+        current_subject = st.text_input("Onderwerp van de ronde:", value=status.get("subject", ""))
+        if st.button("Update Onderwerp"):
+            update_db(subject=current_subject)
+            
         grid_size = st.slider("Raster grootte", 4, 30, 10)
         delay = st.slider("Snelheid (sec)", 0.05, 2.0, 0.4)
         uploaded_files = st.file_uploader("Upload foto's", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+
+    # Toon ingelogde teams
+    st.subheader("👥 Ingelogde Teams")
+    teams = status.get("connected_teams", [])
+    if teams:
+        st.write(", ".join(teams))
+    else:
+        st.write("*Nog geen teams verbonden...*")
 
     if uploaded_files:
         if 'photo_idx' not in st.session_state:
@@ -49,18 +77,16 @@ if role == "Host":
         cell_h, cell_w = h // grid_size, w // grid_size
         total_cells = grid_size * grid_size
 
-        status = get_status()
-
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("▶️ Start / Volledige Reset"):
+            if st.button("▶️ Start / Reset Ronde"):
                 order = list(range(total_cells))
                 random.shuffle(order)
                 update_db(winner=None, active=True, revealed=[], order=order, excluded_teams=[])
                 st.rerun()
         
         with col2:
-            if st.button("❌ Fout! (Team uitsluiten)"):
+            if st.button("❌ Fout! (Uitsluiten)"):
                 if status["winner"]:
                     excluded = status.get("excluded_teams", [])
                     if status["winner"] not in excluded:
@@ -74,12 +100,13 @@ if role == "Host":
                 update_db(winner=None, active=False, revealed=[], order=[], excluded_teams=[])
                 st.rerun()
 
-        if status.get("excluded_teams"):
-            st.write(f"🚫 **Uitgesloten deze ronde:** {', '.join(status['excluded_teams'])}")
+        # Toon onderwerp groot boven de foto
+        if status.get("subject"):
+            st.markdown(f"### 💡 Categorie: {status['subject']}")
 
         placeholder = st.empty()
 
-        # Animatie logica voor de Host
+        # Animatie logica
         if status["active"] and status["winner"] is None:
             revealed = status["revealed"]
             order = status["order"]
@@ -111,26 +138,31 @@ if role == "Host":
             
             if status["winner"]:
                 st.header(f"🏆 {status['winner']} mag antwoorden!")
-                st.info("Klik op 'Fout!' om dit team uit te sluiten en de foto verder te laten gaan.")
 
 else:
     # --- Team Interface ---
     st.title("Team Buzzer")
-    team_name = st.text_input("Teamnaam:", placeholder="Bijv. Kleinkinderen")
+    team_name = st.text_input("Teamnaam:", placeholder="Voer je naam in...")
     
     if team_name:
+        # Registreer het team in de lijst van ingelogde teams
+        update_db(connected_teams=team_name)
+        
         status = get_status()
         excluded_teams = status.get("excluded_teams", [])
 
+        if status.get("subject"):
+            st.info(f"Categorie: {status['subject']}")
+
         if team_name in excluded_teams:
-            st.error("❌ Je hebt een fout antwoord gegeven. Je mag bij deze foto niet meer buzzen.")
+            st.error("❌ Fout antwoord gegeven. Wacht op de volgende foto.")
         elif not status["active"]:
-            st.info("Wacht op de Host...")
+            st.info("Wacht tot de Host de ronde start...")
         elif status["winner"]:
             if status["winner"] == team_name:
                 st.success("JULLIE ZIJN EERST!")
             else:
-                st.warning(f"{status['winner']} is aan het antwoorden...")
+                st.warning(f"{status['winner']} antwoordt...")
         else:
             if st.button("🚨 IK WEET HET! 🚨", use_container_width=True):
                 s = get_status()
