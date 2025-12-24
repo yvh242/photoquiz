@@ -12,26 +12,16 @@ DB_FILE = "quiz_state.json"
 def init_db():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
-            json.dump({"winner": None, "active": False, "revealed": []}, f)
+            json.dump({"winner": None, "active": False, "revealed": [], "order": []}, f)
 
 def get_status():
     with open(DB_FILE, "r") as f:
         return json.load(f)
 
-def set_buzzer_winner(team_name):
+def update_db(**kwargs):
     status = get_status()
-    if status["active"] and status["winner"] is None:
-        status["winner"] = team_name
-        with open(DB_FILE, "w") as f:
-            json.dump(status, f)
-        return True
-    return False
-
-def update_db(winner=None, active=None, revealed=None):
-    status = get_status()
-    if winner is not None: status["winner"] = winner
-    if active is not None: status["active"] = active
-    if revealed is not None: status["revealed"] = revealed
+    for key, value in kwargs.items():
+        status[key] = value
     with open(DB_FILE, "w") as f:
         json.dump(status, f)
 
@@ -45,8 +35,8 @@ if role == "Host":
     st.title("Admin Panel - Foto Blokjes Quiz")
     
     with st.sidebar:
-        grid_size = st.slider("Raster grootte", 4, 20, 10)
-        delay = st.slider("Snelheid (sec)", 0.1, 2.0, 0.5)
+        grid_size = st.slider("Raster grootte", 4, 30, 10)
+        delay = st.slider("Snelheid (sec)", 0.05, 2.0, 0.4)
         uploaded_files = st.file_uploader("Upload foto's", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
     if uploaded_files:
@@ -59,35 +49,47 @@ if role == "Host":
         cell_h, cell_w = h // grid_size, w // grid_size
         total_cells = grid_size * grid_size
 
-        col1, col2 = st.columns(2)
+        status = get_status()
+
+        col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("▶️ Start Animatie & Buzzer"):
+            if st.button("▶️ Start / Reset Ronde"):
                 order = list(range(total_cells))
                 random.shuffle(order)
-                st.session_state.order = order
-                update_db(winner=None, active=True, revealed=[])
+                update_db(winner=None, active=True, revealed=[], order=order)
+                st.rerun()
+        
         with col2:
+            if st.button("🔄 Fout! (Doorgaan)"):
+                # Reset alleen de winnaar, laat de rest (revealed en order) staan
+                update_db(winner=None, active=True)
+                st.rerun()
+
+        with col3:
             if st.button("⏭️ Volgende Foto"):
                 st.session_state.photo_idx = (st.session_state.photo_idx + 1) % len(uploaded_files)
-                update_db(winner=None, active=False, revealed=[])
+                update_db(winner=None, active=False, revealed=[], order=[])
                 st.rerun()
 
         placeholder = st.empty()
-        status = get_status()
 
-        # Animatie Loop
+        # Animatie logica voor de Host
         if status["active"] and status["winner"] is None:
             revealed = status["revealed"]
-            for i in range(len(revealed), len(st.session_state.order)):
-                # Check tussentijds of iemand gedrukt heeft
+            order = status["order"]
+            
+            # Ga verder vanaf het punt waar we gebleven waren
+            start_index = len(revealed)
+            for i in range(start_index, len(order)):
+                # Check elke stap of er een winnaar is (via de DB)
                 current_status = get_status()
                 if current_status["winner"]:
-                    break
+                    st.rerun() # Stop animatie en toon winnaar
                 
-                revealed.append(st.session_state.order[i])
+                revealed.append(order[i])
                 update_db(revealed=revealed)
                 
-                # Teken foto
+                # Teken de foto
                 temp_img = np.zeros_like(img_array)
                 for idx in revealed:
                     r, c = divmod(idx, grid_size)
@@ -103,34 +105,35 @@ if role == "Host":
                 r, c = divmod(idx, grid_size)
                 temp_img[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w] = \
                     img_array[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w]
+            
             placeholder.image(temp_img if status["revealed"] else img_array * 0, use_container_width=True)
             
             if status["winner"]:
-                st.balloons()
-                st.header(f"🏆 {status['winner']} drukte eerst!")
+                st.header(f"🏆 {status['winner']} mag antwoorden!")
+                st.warning("De animatie is gepauzeerd. Gebruik 'Fout!' om door te gaan of 'Volgende' voor een nieuwe foto.")
 
 else:
     # --- Team Interface ---
     st.title("Team Buzzer")
-    team_name = st.text_input("Teamnaam:", placeholder="Bijv. Team Opa")
+    team_name = st.text_input("Teamnaam:", placeholder="Bijv. Familie Janssen")
     
     if team_name:
         status = get_status()
         if not status["active"]:
-            st.info("Wacht op de Host om de ronde te starten...")
-            time.sleep(1)
-            st.rerun()
+            st.info("Wacht op de Host...")
         elif status["winner"]:
             if status["winner"] == team_name:
-                st.success("JIJ BENT EERST! Geef je antwoord!")
+                st.success("JULLIE ZIJN EERST!")
             else:
                 st.error(f"Te laat! {status['winner']} was eerst.")
-            time.sleep(2)
-            st.rerun()
         else:
             if st.button("🚨 IK WEET HET! 🚨", use_container_width=True):
-                set_buzzer_winner(team_name)
+                # Check nogmaals in de DB vlak voor het schrijven
+                s = get_status()
+                if s["winner"] is None:
+                    update_db(winner=team_name)
                 st.rerun()
         
-        time.sleep(0.5)
+        # Team pagina ververst elke seconde om de status van de host te volgen
+        time.sleep(1)
         st.rerun()
