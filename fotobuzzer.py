@@ -12,7 +12,7 @@ DB_FILE = "quiz_state.json"
 def init_db():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
-            json.dump({"winner": None, "active": False, "revealed": [], "order": []}, f)
+            json.dump({"winner": None, "active": False, "revealed": [], "order": [], "excluded_teams": []}, f)
 
 def get_status():
     with open(DB_FILE, "r") as f:
@@ -53,23 +53,29 @@ if role == "Host":
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("▶️ Start / Reset Ronde"):
+            if st.button("▶️ Start / Volledige Reset"):
                 order = list(range(total_cells))
                 random.shuffle(order)
-                update_db(winner=None, active=True, revealed=[], order=order)
+                update_db(winner=None, active=True, revealed=[], order=order, excluded_teams=[])
                 st.rerun()
         
         with col2:
-            if st.button("🔄 Fout! (Doorgaan)"):
-                # Reset alleen de winnaar, laat de rest (revealed en order) staan
-                update_db(winner=None, active=True)
+            if st.button("❌ Fout! (Team uitsluiten)"):
+                if status["winner"]:
+                    excluded = status.get("excluded_teams", [])
+                    if status["winner"] not in excluded:
+                        excluded.append(status["winner"])
+                    update_db(winner=None, active=True, excluded_teams=excluded)
                 st.rerun()
 
         with col3:
             if st.button("⏭️ Volgende Foto"):
                 st.session_state.photo_idx = (st.session_state.photo_idx + 1) % len(uploaded_files)
-                update_db(winner=None, active=False, revealed=[], order=[])
+                update_db(winner=None, active=False, revealed=[], order=[], excluded_teams=[])
                 st.rerun()
+
+        if status.get("excluded_teams"):
+            st.write(f"🚫 **Uitgesloten deze ronde:** {', '.join(status['excluded_teams'])}")
 
         placeholder = st.empty()
 
@@ -78,18 +84,14 @@ if role == "Host":
             revealed = status["revealed"]
             order = status["order"]
             
-            # Ga verder vanaf het punt waar we gebleven waren
-            start_index = len(revealed)
-            for i in range(start_index, len(order)):
-                # Check elke stap of er een winnaar is (via de DB)
+            for i in range(len(revealed), len(order)):
                 current_status = get_status()
                 if current_status["winner"]:
-                    st.rerun() # Stop animatie en toon winnaar
+                    st.rerun() 
                 
                 revealed.append(order[i])
                 update_db(revealed=revealed)
                 
-                # Teken de foto
                 temp_img = np.zeros_like(img_array)
                 for idx in revealed:
                     r, c = divmod(idx, grid_size)
@@ -99,7 +101,6 @@ if role == "Host":
                 placeholder.image(temp_img, use_container_width=True)
                 time.sleep(delay)
         else:
-            # Stilstaand beeld tonen
             temp_img = np.zeros_like(img_array)
             for idx in status["revealed"]:
                 r, c = divmod(idx, grid_size)
@@ -110,30 +111,32 @@ if role == "Host":
             
             if status["winner"]:
                 st.header(f"🏆 {status['winner']} mag antwoorden!")
-                st.warning("De animatie is gepauzeerd. Gebruik 'Fout!' om door te gaan of 'Volgende' voor een nieuwe foto.")
+                st.info("Klik op 'Fout!' om dit team uit te sluiten en de foto verder te laten gaan.")
 
 else:
     # --- Team Interface ---
     st.title("Team Buzzer")
-    team_name = st.text_input("Teamnaam:", placeholder="Bijv. Familie Janssen")
+    team_name = st.text_input("Teamnaam:", placeholder="Bijv. Kleinkinderen")
     
     if team_name:
         status = get_status()
-        if not status["active"]:
+        excluded_teams = status.get("excluded_teams", [])
+
+        if team_name in excluded_teams:
+            st.error("❌ Je hebt een fout antwoord gegeven. Je mag bij deze foto niet meer buzzen.")
+        elif not status["active"]:
             st.info("Wacht op de Host...")
         elif status["winner"]:
             if status["winner"] == team_name:
                 st.success("JULLIE ZIJN EERST!")
             else:
-                st.error(f"Te laat! {status['winner']} was eerst.")
+                st.warning(f"{status['winner']} is aan het antwoorden...")
         else:
             if st.button("🚨 IK WEET HET! 🚨", use_container_width=True):
-                # Check nogmaals in de DB vlak voor het schrijven
                 s = get_status()
-                if s["winner"] is None:
+                if s["winner"] is None and team_name not in s.get("excluded_teams", []):
                     update_db(winner=team_name)
                 st.rerun()
         
-        # Team pagina ververst elke seconde om de status van de host te volgen
         time.sleep(1)
         st.rerun()
